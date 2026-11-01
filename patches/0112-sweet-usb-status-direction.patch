@@ -1,0 +1,99 @@
+Send the control transfer status stage in the direction the host expects.
+
+Windows could see the CDC-ACM device -- it enumerated and created COM5 --
+but every attempt to open that port timed out with Win32 error 121,
+"the semaphore timeout period has expired".  The reason was the status
+stage of a control transfer, not the serial data itself.
+
+A control transfer is SETUP, an optional data stage, and a status stage
+(USB 2.0 8.5.3).  The status stage always runs in the direction opposite
+to the data stage: after an IN data stage the host sends the zero length
+packet, after an OUT data stage the device does.  A transfer with no data
+stage at all is always followed by a device-to-host status.
+
+0101 took the direction of the status stage from the endpoint number of
+the "control status" event, which is not what the controller reports
+there.  Linux does not do it that way either -- in drivers/usb/dwc3/ep0.c
+the direction is computed as
+
+    direction = !dwc->ep0_expect_in;
+
+and the status TRB is then submitted on dwc->eps[direction], i.e. on
+endpoint 1 for an IN status and endpoint 0 for an OUT status.  ep0_expect_in
+is set from the direction bit of the setup packet, so the two agree.
+
+The three cases, and what the host does with each:
+
+  SETUP only (SET_CONFIGURATION, SET_INTERFACE)
+      no data stage, the host waits for an IN status.
+  IN data (GET_DESCRIPTOR, GET_LINE_CODING)
+      the host waits for an OUT status.
+  OUT data (SET_LINE_CODING)
+      the host waits for an IN status.
+
+Windows sends SET_LINE_CODING with seven payload bytes when it opens the
+port, which is the third case: the device has to answer with an IN status.
+0101 used the event's endpoint number, which for that transfer is 0, so
+the device queued an OUT status instead.  The host waited for a status
+that would never come and gave up.
+
+The direction is now derived from the data stage instead of from the
+event, so the two working cases keep the direction they had and only the
+broken one changes.
+
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -226,6 +226,7 @@
+ 	int         sleep_chan;
+ 	enum { EP0_SETUP, EP0_DATA, EP0_WAIT_STATUS2, EP0_WAIT_STATUS3, EP0_STATUS } state;
+ 	bool        data_in;        /* data stage direction */
++	bool        status_in;      /* status stage direction: true = IN */
+ 	uint32_t    events;
+ 	bool        configured;
+ 	uint8_t     data_alt;       /* data interface alternate setting */
+@@ -486,6 +487,12 @@
+ 		return;
+ 	}
+ 	if (length == 0) {
++		/*
++		 * Two-stage control transfer: SETUP then STATUS.  There is no
++		 * data stage, so the status stage is the device-to-host zero
++		 * length packet (USB 2.0 8.5.3.1).
++		 */
++		ud.status_in = true;
+ 		ud.state = EP0_WAIT_STATUS2;    /* status stage on XferNotReady */
+ 		return;
+ 	}
+@@ -767,6 +774,21 @@
+ 			ud_setup();
+ 			break;
+ 		case EP0_DATA:
++			/*
++			 * The status stage runs in the direction opposite to
++			 * the data stage (USB 2.0 8.5.3.1): after an IN data
++			 * stage the host sends the zero length OUT packet,
++			 * after an OUT data stage the device does.
++			 *
++			 * 0101 took the direction from the endpoint number of
++			 * the "control status" event, which is not what the
++			 * controller reports there, so the host was left
++			 * waiting for a status it would never get: Windows
++			 * opens a COM port with SET_LINE_CODING (an OUT data
++			 * stage) and then gave up with Win32 error 121,
++			 * "the semaphore timeout period has expired".
++			 */
++			ud.status_in = !ud.data_in;
+ 			ud.state = EP0_WAIT_STATUS3;
+ 			break;
+ 		case EP0_STATUS:
+@@ -780,8 +802,9 @@
+ 	if (type == 3 && status == 2) { /* XferNotReady, control status phase */
+ 		if (ud.state == EP0_WAIT_STATUS2 || ud.state == EP0_WAIT_STATUS3) {
+ 			uint32_t ctl = ud.state == EP0_WAIT_STATUS3 ? TRBCTL_STATUS3 : TRBCTL_STATUS2;
++			unsigned sep = ud.status_in ? 1 : 0;
+ 			ud.state = EP0_STATUS;
+-			ud_start(ep, UD_DATA, 0, ctl);
++			ud_start(sep, UD_DATA, 0, ctl);
+ 		}
+ 	}
+ }

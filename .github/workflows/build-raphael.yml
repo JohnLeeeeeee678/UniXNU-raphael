@@ -187,6 +187,24 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the control-transfer status direction landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          echo "=== source state ==="
+          grep -n 'status_in' "$SRC" || echo "(no status_in field: 0112 skipped)"
+          grep -n 'ud.status_in = !ud.data_in' "$SRC" || echo "(the direction is still taken from the event: 0112 skipped)"
+          # 0112 derives the status stage direction from the data stage.
+          # Without it the device answers SET_LINE_CODING with an OUT status,
+          # the host waits for an IN status that never comes, and every
+          # attempt to open the COM port times out with Win32 error 121.
+          if grep -qF 'ud.status_in = !ud.data_in' "$SRC" \
+             && grep -qF 'ud_start(sep, UD_DATA, 0, ctl)' "$SRC"; then
+            echo "control status direction: APPLIED"
+          else
+            echo "::error::0112 was skipped; the COM port cannot be opened"
+            exit 1
+          fi
+
       - name: Verify the SpringBoard-focused panel landed
         run: |
           SRC=dxb/xnu/bsd/dev/sweet_usb.c

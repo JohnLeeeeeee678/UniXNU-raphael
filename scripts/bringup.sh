@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Flash the iOS root and boot it, in one go.
+# Bring the phone up on raphael: flash the iOS root and boot the kernel.
 #
 #   bringup.sh [--image BOOT.img] [--work-dir DIR] [--pieces-dir DIR]
 #              [--dense IMG] [--no-flash] [--no-log]
@@ -13,10 +13,11 @@
 # They are flashed in DESCENDING order, which is also the only order that
 # stays correct if a bootloader ever materialised DONT_CARE as zeros.
 #
-# The pieces come from the DENSE image (make_dense.py).  The bootloader treats
-# DONT_CARE as a seek rather than a write, so a sparse image would leave the
-# blocks it skips holding the previous root build -- including 47 blocks
-# inside the HFS+ catalog B-tree.  Dense means every block is written.
+# Why the pieces come from the DENSE image (make_dense.py): the bootloader
+# treats DONT_CARE as a seek rather than a write, so a sparse image would
+# leave the blocks it skips holding the previous root build -- including 47
+# blocks inside the HFS+ catalog B-tree.  Dense means every block is
+# written, so the phone ends up with exactly the volume CI verified.
 #
 # The HFS+ volume goes to the very start of the userdata partition: the
 # kernel mounts the partition itself as the root filesystem, and the
@@ -40,20 +41,21 @@ READLOG=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --image)    IMAGE="$2"; shift 2 ;;
-    --work-dir) WORK_DIR="$2"; shift 2 ;;
+    --image)      IMAGE="$2"; shift 2 ;;
+    --work-dir)   WORK_DIR="$2"; shift 2 ;;
     --pieces-dir) PIECES_DIR="$2"; shift 2 ;;
-    --dense)    DENSE="$2"; shift 2 ;;
-    --log)      LOG="$2"; shift 2 ;;
-    --no-flash) FLASH=0; shift ;;
-    --no-log)   READLOG=0; shift ;;
+    --dense)      DENSE="$2"; shift 2 ;;
+    --log)        LOG="$2"; shift 2 ;;
+    --no-flash)   FLASH=0; shift ;;
+    --no-log)     READLOG=0; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 FASTBOOT="${FASTBOOT:-}"
 if [ -z "$FASTBOOT" ]; then
-  for c in fastboot ./fastboot.exe ../tools/platform-tools/fastboot.exe; do
+  for c in fastboot ./fastboot.exe ../tools/platform-tools/fastboot.exe \
+           ../../tools/platform-tools/fastboot.exe; do
     if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then FASTBOOT="$c"; break; fi
   done
 fi
@@ -105,6 +107,9 @@ if [ "$READLOG" = "1" ]; then
   echo
   echo "== reading the kernel console over USB (Ctrl-C to stop) =="
   echo "== log file: $LOG"
+  echo "== the report line is:"
+  echo "   === SWEET t=Ns exec=N crash=N sb=N/N fb=N sw=N dn=N m=N gui=N ==="
+  echo "   sw= non-zero and gui=1 means the GUI took the screen."
   python3 "$ROOT/scripts/console_log.py" - "$LOG" || true
 else
   echo
