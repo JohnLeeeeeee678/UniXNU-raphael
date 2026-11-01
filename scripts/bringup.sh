@@ -133,3 +133,12 @@ else
   echo "   sw= is the number of frames that actually reached the panel."
   echo "   gui=1 means the console yielded to the GUI (the home screen is up)."
 fi
+
+# The USB trace is only useful once it has been read, so decode it at the
+# end: it says straight out whether the control transfer status stages went
+# the way the host expected.
+if [ -s "$LOG" ]; then
+  echo
+  echo "== decoding the USB trace =="
+  python3 "$ROOT/scripts/decode_usb_events.py" "$LOG" || true
+fi
