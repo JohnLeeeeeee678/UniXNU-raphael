@@ -100,6 +100,21 @@ else
 fi
 
 echo
+echo "== checking the kernel inside the boot image =="
+# The kernel lives inside a FAT payload, so its strings are split across
+# cluster boundaries and `strings(1)` misses them; check_boot_image.py
+# walks the raw bytes instead.  A kernel without the panel digest (0111)
+# cannot say whether the GUI took the screen, and that is exactly the
+# question this bring-up is here to answer -- say so before flashing 13 GB.
+if python3 "$ROOT/scripts/check_boot_image.py" "$IMAGE" --need 'gui=%d'; then
+  echo "   the panel digest is in this image"
+else
+  echo "!! gui=%d NOT found in $IMAGE." >&2
+  echo "!! This image predates 0111, so it cannot report whether the GUI" >&2
+  echo "!! took the screen.  Check the kernel before trusting the screen." >&2
+fi
+
+echo
 echo "== booting $IMAGE =="
 "$FASTBOOT" boot "$IMAGE"
 
