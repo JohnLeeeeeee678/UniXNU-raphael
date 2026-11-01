@@ -175,6 +175,34 @@ writes everything the kernel prints. `scripts/bringup.sh` runs it right after
 bash scripts/bringup.sh          # verify -> flash -> boot -> read the log
 ```
 
+## If the COM port will not open
+
+Windows creates the COM port as soon as it has enumerated the device, but
+opening it can still fail with:
+
+```
+OSError(22, 'the semaphore timeout period has expired', None, 121)
+```
+
+That is the host waiting for the **status stage** of a control transfer.
+A control transfer is SETUP, an optional data stage and a status stage, and
+the status stage always runs in the direction opposite to the data stage
+(USB 2.0 8.5.3).  Windows sends `SET_LINE_CODING` with seven payload bytes
+when it opens the port, so the device has to answer with an IN status.
+
+Patch 0112 derives that direction from the data stage.  Its fix leaves no
+trace in the binary, so the image cannot be checked for it directly; what
+*can* be checked is that the image carries a kernel new enough to report
+the panel state at all.  `gui=%d` is the marker for patch 0111:
+
+```bash
+python3 scripts/check_boot_image.py boot.img --need 'gui=%d'
+```
+
+Note that `strings(1)` does **not** work for this: the kernel sits inside a
+FAT payload, so its strings are split across cluster boundaries.  The
+script walks the raw bytes instead.
+
 ## Kernel boot arguments
 
 From `board.toml` `[payload] kernel_args`:
