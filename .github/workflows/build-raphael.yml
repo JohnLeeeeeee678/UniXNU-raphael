@@ -193,6 +193,13 @@ jobs:
           echo "=== source state ==="
           grep -n 'status_in' "$SRC" || echo "(no status_in field: 0112 skipped)"
           grep -n 'ud.status_in = !ud.data_in' "$SRC" || echo "(the direction is still taken from the event: 0112 skipped)"
+          # The old code took the direction from the endpoint number of the
+          # "control status" event.  That line has to be gone, or the patch
+          # was applied backwards.
+          if grep -qF 'ud_start(ep, UD_DATA, 0, ctl)' "$SRC"; then
+            echo "::error::0112 was applied backwards; the old direction is still there"
+            exit 1
+          fi
           # 0112 derives the status stage direction from the data stage.
           # Without it the device answers SET_LINE_CODING with an OUT status,
           # the host waits for an IN status that never comes, and every
