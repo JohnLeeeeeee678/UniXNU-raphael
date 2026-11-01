@@ -203,6 +203,25 @@ Note that `strings(1)` does **not** work for this: the kernel sits inside a
 FAT payload, so its strings are split across cluster boundaries.  The
 script walks the raw bytes instead.
 
+### If it still does not open
+
+The kernel prints every DWC3 event it sees:
+
+```
+SWEET USB: event 0x%08x
+```
+
+and every control request it receives:
+
+```
+SWEET USB: setup %02x %02x %04x %04x len %u
+```
+
+`setup 21 20 0000 0000 len 7` is the `SET_LINE_CODING` that starts the
+trouble.  The event words right after it show which endpoint the
+controller reported for the status phase, which is what patch 0112
+changed the code to ignore.
+
 ## Kernel boot arguments
 
 From `board.toml` `[payload] kernel_args`:
