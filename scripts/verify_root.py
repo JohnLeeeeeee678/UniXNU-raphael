@@ -83,18 +83,24 @@ class SparseImage:
             pos += total
 
     def read(self, offset, length):
-        """Read `length` bytes at `offset` inside the sparse volume."""
-        out = bytearray()
+        """Read `length` bytes at `offset` inside the sparse volume.
+
+        The chunks are not necessarily contiguous and a chunk that is not
+        RAW still occupies space in the volume, so the result has to be
+        placed at the right offset rather than concatenated.
+        """
+        out = bytearray(length)
         for ctype, blocks, data_off, total, blk0 in self.chunks:
-            if ctype != CHUNK_RAW:
-                continue
             start = blk0 * self.blk
             end = start + blocks * self.blk
             if end <= offset or start >= offset + length:
                 continue
             take = min(end, offset + length) - max(start, offset)
-            self.f.seek(data_off + (max(start, offset) - start))
-            out += self.f.read(take)
+            dst = max(start, offset) - offset
+            if ctype == CHUNK_RAW:
+                self.f.seek(data_off + (max(start, offset) - start))
+                out[dst:dst + take] = self.f.read(take)
+            # DONT_CARE and FILL chunks are holes: leave them zero.
         return bytes(out)
 
     def scan(self, needles):

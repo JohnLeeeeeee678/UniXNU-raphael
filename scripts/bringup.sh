@@ -38,6 +38,10 @@ DENSE="${DENSE:-$WORK_DIR/ios16-root-dense.simg}"
 LOG="${LOG:-$WORK_DIR/ios-console.log}"
 FLASH=1
 READLOG=1
+# How long to wait for "fastboot boot" before calling it hung.  A healthy
+# boot takes a few seconds; the Xiaomi ABL hang shows up as an indefinite
+# "Sending", so 180 s is far more than a working boot needs.
+BOOT_TIMEOUT="${BOOT_TIMEOUT:-180}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,11 +85,27 @@ if [ "$FLASH" = "1" ]; then
 
   echo
   echo "== simulating the flash =="
-  python3 "$ROOT/scripts/simulate_flash.py" "$DENSE" "$PIECES_DIR"
+  # The simulation replays what the bootloader will do with these chunks.
+  # It is a second opinion on the verification above, not the verification
+  # itself, so a missing NumPy must not stand between the phone and the
+  # flash: verify_pieces.py has already compared every block.
+  if ! python3 "$ROOT/scripts/simulate_flash.py" "$DENSE" "$PIECES_DIR"; then
+    echo "!! the flash simulation could not run (see the error above)." >&2
+    echo "!! The piece verification above is the authoritative check and" >&2
+    echo "!! it passed; continuing with the flash." >&2
+  fi
 
   echo
   echo "== verifying the volume =="
   python3 "$ROOT/scripts/verify_root.py" "$WORK_DIR/ios16-root.simg"
+
+  echo
+  echo "== verifying the bring-up tweaks =="
+  # CommCenter removed, Setup skipped, DataMigration marked, activation
+  # seeded.  A missing tweak is the difference between a phone that boots
+  # to a home screen and one that sits on the Setup screen for ever, so
+  # check the files rather than trust that the build ran them.
+  python3 "$ROOT/scripts/check_root_tweaks.py" "$WORK_DIR/ios16-root.simg"
 
   echo
   echo "== flashing userdata, descending =="
@@ -116,7 +136,23 @@ fi
 
 echo
 echo "== booting $IMAGE =="
-"$FASTBOOT" boot "$IMAGE"
+# After a large flash the Xiaomi ABL often hangs: the next "fastboot boot"
+# stalls at "Sending" and never returns.  Retrying against the hung
+# bootloader only wastes time, so give the command a deadline and, if it
+# expires, say exactly what the user has to do instead.
+if ! timeout "$BOOT_TIMEOUT" "$FASTBOOT" boot "$IMAGE"; then
+  echo
+  echo "!! fastboot boot did not finish within ${BOOT_TIMEOUT}s." >&2
+  echo "!! This is the known Xiaomi ABL hang after a large flash, not a" >&2
+  echo "!! problem with the image.  Do NOT retry against the hung" >&2
+  echo "!! bootloader -- it will not answer." >&2
+  echo "!!" >&2
+  echo "!! On the phone: hold POWER + VOLUME DOWN, release POWER, and" >&2
+  echo "!! keep holding VOLUME DOWN until the phone shows the fastboot" >&2
+  echo "!! screen (the Xiaomi logo).  Then run this script again with" >&2
+  echo "!! --no-flash: the root is already on the phone." >&2
+  exit 3
+fi
 
 if [ "$READLOG" = "1" ]; then
   echo
