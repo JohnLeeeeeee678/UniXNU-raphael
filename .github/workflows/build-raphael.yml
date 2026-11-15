@@ -271,6 +271,45 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the SM8150 touch panel height landed
+        run: |
+          SRC=dxb/xnu/iokit/Kernel/arm/hid/SweetHID.cpp
+          echo "=== source state ==="
+          grep -n '2340' "$SRC" || echo "(no 2340: 0113 skipped)"
+          grep -n '2400' "$SRC" || echo "(no 2400 left: 0113 skipped)"
+          # 0061 hardcoded the guacamole panel height of 2400 into the HID
+          # code.  On the raphael the panel is 2340 tall, so the touch
+          # coordinates sat 30 logical pixels above the picture and the
+          # edge gesture never fired.
+          if grep -q '2340' "$SRC" && ! grep -q '2400' "$SRC"; then
+            echo "touch panel height: APPLIED"
+          else
+            echo "::error::0113 was skipped; the touch and the display do not line up"
+            exit 1
+          fi
+
+      - name: Verify the SM8150 touch driver landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_touch.c
+          echo "=== source state ==="
+          grep -n 'GT9889' "$SRC" || echo "(no GT9889: 0114 skipped)"
+          grep -n '0x00c88000' "$SRC" || echo "(no SE19 base: 0114 skipped)"
+          grep -n '0x03d00000' "$SRC" || echo "(no SOUTH tile: 0114 skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'GT9889' || true
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'GT9896' || true
+          # 0060 drives the sweet: SE7, the NORTH TLMM tile, the wrapper1
+          # vote register and a GT9896 in the Yellowstone protocol.  None of
+          # that is true on the raphael, so without 0114 the touch IC never
+          # gets a clock and the phone stays locked.
+          if grep -q 'GT9889' "$SRC" && grep -q '0x00c88000' "$SRC" \
+             && grep -q '0x03d00000' "$SRC"; then
+            echo "SM8150 touch driver: APPLIED"
+          else
+            echo "::error::0114 was skipped; the touch controller is still driven as a sweet"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: raphael-kernel
