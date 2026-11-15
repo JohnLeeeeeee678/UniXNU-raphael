@@ -1,0 +1,16 @@
+name: probe-mac-labels
+on:
+  workflow_dispatch:
+jobs:
+  mac13:
+    runs-on: macos-13
+    steps: [{run: "echo mac13-ok; sw_vers"}]
+  mac15:
+    runs-on: macos-15
+    steps: [{run: "echo mac15-ok; sw_vers"}]
+  mac12:
+    runs-on: macos-12
+    steps: [{run: "echo mac12-ok; sw_vers"}]
+  macos:
+    runs-on: macos
+    steps: [{run: "echo macos-ok; sw_vers"}]
