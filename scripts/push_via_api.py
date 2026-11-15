@@ -55,6 +55,25 @@ def git(*args):
         capture_output=True, text=True, check=True).stdout
 
 
+def remote_tree(repo, sha):
+    """Return {path: blob sha} for a commit."""
+    out = {}
+    stack = [{"sha": sha, "prefix": ""}]
+    while stack:
+        node = stack.pop()
+        j = api("https://api.github.com/repos/%s/git/trees/%s"
+                % (repo, node["sha"]))
+        for entry in j.get("tree", []):
+            path = node["prefix"] + entry["path"]
+            if entry["type"] == "tree":
+                stack.append({"sha": entry["sha"], "prefix": path + "/"})
+            else:
+                out[path] = entry["sha"]
+        if j.get("truncated"):
+            raise SystemExit("the tree is truncated, cannot compare")
+    return out
+
+
 def main():
     refs = api("https://api.github.com/repos/%s/git/refs/heads" % REPO)
     remote_sha = None
@@ -65,27 +84,33 @@ def main():
         raise SystemExit("branch %s not found" % BRANCH)
     print("remote %s = %s" % (BRANCH, remote_sha))
 
-    files = git("diff", "--name-only", remote_sha, "HEAD").split()
-    print("files to push:", len(files))
+    base = api("https://api.github.com/repos/%s/git/commits/%s"
+               % (REPO, remote_sha))
+    remote_files = remote_tree(REPO, base["tree"]["sha"])
+
+    local_files = git("ls-tree", "-r", "--name-only", "HEAD").split()
+    files = []
+    for path in local_files:
+        content = subprocess.run(
+            ["git", "-C", LOCAL, "show", "HEAD:" + path],
+            capture_output=True, check=True).stdout
+        blob = api("https://api.github.com/repos/%s/git/blobs" % REPO,
+                   {"content": base64.b64encode(content).decode(),
+                    "encoding": "base64"})
+        if remote_files.get(path) != blob["sha"]:
+            files.append((path, blob["sha"]))
+
+    print("files to push: %d of %d" % (len(files), len(local_files)))
     if not files:
         print("nothing to push")
         return
 
     tree_entries = []
-    for path in files:
-        content = subprocess.run(
-            ["git", "-C", LOCAL, "show", "HEAD:" + path],
-            capture_output=True, check=True).stdout
-        sha = api(
-            "https://api.github.com/repos/%s/git/blobs" % REPO,
-            {"content": base64.b64encode(content).decode(),
-             "encoding": "base64"})["sha"]
+    for path, sha in files:
         tree_entries.append({"path": path, "mode": "100644", "type": "blob",
                              "sha": sha})
         print("  blob %s %s" % (sha[:8], path))
 
-    base = api("https://api.github.com/repos/%s/git/commits/%s"
-               % (REPO, remote_sha))
     tree = api(
         "https://api.github.com/repos/%s/git/trees" % REPO,
         {"base_tree": base["tree"]["sha"], "tree": tree_entries})
@@ -95,8 +120,8 @@ def main():
         "https://api.github.com/repos/%s/git/commits" % REPO,
         {"message": "Bring the port up to date\n\n"
                     "Adds the kernel binary patcher with the control transfer\n"
-                    "status direction fix, the touch offset alignment fix and\n"
-                    "the tools that verify both against the binary.\n",
+                    "status direction fix, the touch offset alignment fix, the\n"
+                    "SM8150 touch clock fix and the tools that verify them.\n",
          "tree": tree["sha"], "parents": [remote_sha]})
     print("commit:", commit["sha"])
 
