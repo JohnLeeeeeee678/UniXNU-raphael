@@ -1,0 +1,28 @@
+name: probe-macos15
+on:
+  workflow_dispatch:
+jobs:
+  tools:
+    runs-on: macos-15
+    steps:
+      - name: List Xcode versions
+        run: |
+          ls -d /Applications/Xcode_*.app || true
+          xcode-select -p
+          xcodebuild -version || true
+      - name: Look for iig
+        run: |
+          for XC in /Applications/Xcode_*.app; do
+            echo "--- $XC"
+            ls "$XC/Contents/Developer/usr/bin/iig" 2>/dev/null || echo "(no iig)"
+            "$XC/Contents/Developer/usr/bin/iig" 2>&1 | head -3 || true
+          done
+          which iig || true
+          xcrun --find iig 2>&1 || true
+      - name: Check SDKs
+        run: |
+          ls /Applications/Xcode_*.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/ 2>/dev/null || true
+      - name: Homebrew availability
+        run: |
+          brew --version || echo "(no brew)"
+          which jq gum cmake ninja || true

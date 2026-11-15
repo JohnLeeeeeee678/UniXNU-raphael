@@ -8,7 +8,7 @@ name: build-raphael
 # tree and the Apple Device Tree (ADT) profile (1080x2340 panel).
 #
 # Two jobs:
-#   1. kernel  (macos-14): builds the SM8150 XNU 8796 kernel the SAME public way
+#   1. kernel  (macos-15): builds the SM8150 XNU 8796 kernel the SAME public way
 #      guacamole does -- via dipa-studio/ios-sweet + blacktop/darwin-xnu-build
 #      (MACHINE_CONFIG=SWEET). This is fully public; NO private defconfig needed.
 #   2. build   (ubuntu-latest): builds the Aloha UEFI firmware volume, packs the
@@ -45,8 +45,12 @@ permissions:
 
 jobs:
   kernel:
-    # XNU 8796 needs Xcode 15 (iig ABI) -> macos-14, like ios-sweet.
-    runs-on: macos-14
+    # XNU 8796 needs the iig ABI -> a macOS runner with Xcode.
+    # macos-15 (Xcode 16) is used instead of macos-14: on this account the
+    # macos-14 runner image is cancelled within seconds of the job starting
+    # (every macos-14 run since 2026-11-14 ends "cancelled" in 1-3 s with a
+    # billable duration of 0 ms, while ubuntu-latest and macos-15 both work).
+    runs-on: macos-15
     timeout-minutes: 240
     env:
       # Without MACOS_VERSION build.sh pops an interactive gum menu and dies
@@ -97,7 +101,10 @@ jobs:
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"
           xcodebuild -version
+          # iig lives inside the selected Xcode; make sure the toolchain that
+          # actually builds the kernel can produce the iig interfaces.
           xcrun --find iig
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Build XNU 8796 (SWEET platform, arm64)
         working-directory: dxb
