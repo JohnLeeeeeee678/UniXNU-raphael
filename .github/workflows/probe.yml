@@ -1,0 +1,9 @@
+name: probe-runners
+on: workflow_dispatch
+jobs:
+  mac:
+    runs-on: macos-14
+    steps: [{run: "echo mac-ok; uname -a"}]
+  linux:
+    runs-on: ubuntu-latest
+    steps: [{run: "echo linux-ok; uname -a"}]

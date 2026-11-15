@@ -41,6 +41,16 @@ The direction is now derived from the data stage instead of from the
 event, so the two working cases keep the direction they had and only the
 broken one changes.
 
+TRBCTL_STATUS2 and TRBCTL_STATUS3 are not directions and are left
+untouched.  Linux picks between them by the hardware's three_stage_setup
+flag (drivers/usb/dwc3/ep0.c):
+
+    type = dwc->three_stage_setup ? DWC3_TRBCTL_CONTROL_STATUS3
+                                   : DWC3_TRBCTL_CONTROL_STATUS2;
+
+and takes the direction of the status stage from the endpoint the TRB is
+queued on.  Only the endpoint (ud_start(sep, ...)) changes here.
+
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
 @@ -226,6 +226,7 @@
@@ -51,20 +61,22 @@ broken one changes.
  	uint32_t    events;
  	bool        configured;
  	uint8_t     data_alt;       /* data interface alternate setting */
-@@ -486,6 +487,12 @@
+@@ -486,6 +487,13 @@
  		return;
  	}
  	if (length == 0) {
 +		/*
 +		 * Two-stage control transfer: SETUP then STATUS.  There is no
-+		 * data stage, so the status stage is the device-to-host zero
-+		 * length packet (USB 2.0 8.5.3.1).
++		 * data stage, so the status stage runs in the direction
++		 * opposite to the setup packet (USB 2.0 8.5.3.1): a host to
++		 * device setup is answered with the device to host zero
++		 * length packet.
 +		 */
-+		ud.status_in = true;
++		ud.status_in = !ud.data_in;
  		ud.state = EP0_WAIT_STATUS2;    /* status stage on XferNotReady */
  		return;
  	}
-@@ -767,6 +774,21 @@
+@@ -767,6 +775,21 @@
  			ud_setup();
  			break;
  		case EP0_DATA:
@@ -81,6 +93,12 @@ broken one changes.
 +			 * opens a COM port with SET_LINE_CODING (an OUT data
 +			 * stage) and then gave up with Win32 error 121,
 +			 * "the semaphore timeout period has expired".
++			 *
++			 * Only the endpoint changes.  TRBCTL_STATUS2 and
++			 * TRBCTL_STATUS3 are not directions - Linux picks
++			 * between them by the hardware's three_stage_setup
++			 * flag (drivers/usb/dwc3/ep0.c) and takes the
++			 * direction from the endpoint the TRB is queued on.
 +			 */
 +			ud.status_in = !ud.data_in;
  			ud.state = EP0_WAIT_STATUS3;

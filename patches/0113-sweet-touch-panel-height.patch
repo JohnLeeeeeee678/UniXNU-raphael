@@ -1,0 +1,52 @@
+Use the raphael panel height in the touch offset so touch and display agree.
+
+0061 presents the display as the iPhone X panel: 1125x2436 logical, with
+the physical panel centred inside it.  SweetFramebuffer knows the real
+panel size -- it reads it from the device tree -- and computes
+
+    fOffX = (fLogicalW - fWidth) / 2;
+    fOffY = (fLogicalH - fHeight) / 2;
+
+On the raphael panel (1080x2340) that is (22, 48).
+
+SweetHID cannot know the panel size, so 0061 hard coded the 2400 of the
+guacamole panel:
+
+    fLogicalW = native ? 1080 : 1125;
+    fLogicalH = native ? 2400 : 2436;
+    fOffX = (fLogicalW - 1080) / 2;
+    fOffY = (fLogicalH - 2400) / 2;
+
+which gives (22, 18).  The digitizer and the framebuffer therefore
+disagree by 30 logical pixels in Y: every touch lands 30 points above the
+finger, and the swipe up from the bottom edge never reaches the home
+indicator, so the screen cannot be unlocked.
+
+The fix is to use the raphael panel height 2340 in both places where
+0061 mentions 2400.  The 1080 of the width is correct on raphael as
+well and stays untouched.
+
+  * native mode presents the real panel, so its logical height is the
+    panel height: 2400 -> 2340.
+  * the offset is the distance between the logical and the native size,
+    so the subtraction changes from 2400 to 2340: (2436 - 2340) / 2 = 48,
+    which is exactly what SweetFramebuffer computes.
+
+The digitizer reports the raw panel coordinates (0060 hands them over
+without any scaling), so the raw y range is 0..2339 on raphael and the
+2340 is exactly the right divisor.
+
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -426,9 +426,9 @@
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+ 	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
++	fLogicalH = native ? 2340 : 2436;
+ 	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	fOffY = (fLogicalH - 2340) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
