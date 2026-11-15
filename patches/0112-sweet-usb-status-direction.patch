@@ -61,7 +61,7 @@ queued on.  Only the endpoint (ud_start(sep, ...)) changes here.
  	uint32_t    events;
  	bool        configured;
  	uint8_t     data_alt;       /* data interface alternate setting */
-@@ -486,6 +487,13 @@
+@@ -486,6 +487,14 @@
  		return;
  	}
  	if (length == 0) {
@@ -76,7 +76,7 @@ queued on.  Only the endpoint (ud_start(sep, ...)) changes here.
  		ud.state = EP0_WAIT_STATUS2;    /* status stage on XferNotReady */
  		return;
  	}
-@@ -767,6 +775,21 @@
+@@ -767,6 +775,27 @@
  			ud_setup();
  			break;
  		case EP0_DATA:
