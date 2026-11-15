@@ -214,6 +214,127 @@ PATCHES_DATA = [
 ]
 
 
+# Instruction level patches: (name, file offset, expected word, new word, why)
+#
+# The 0060 touch driver was written for the sweet platform, which is a
+# SM7150.  The raphael is a SM8150, so the touch controller sits on a
+# different GENI serial engine and its clocks live in a different clock
+# controller block.
+#
+# Everything that has to change is an immediate field inside an existing
+# instruction, so no branch moves, no code grows and no relocation is
+# needed.  The values come from the Linux clock driver for the SM8150
+# (drivers/clk/qcom/gcc-sm8150.c) and from the raphael device tree:
+#
+#   sweet (SM7150)              raphael (SM8150)
+#   -------------------------   ------------------------------------
+#   SE7   at 0x00a84000         SE19  at 0x00c88000
+#   vote  at 0x5200c             vote  at 0x52014
+#   mask  bits 18-21, 23         mask  bits 1, 2, 6
+#   RCG   0x18148 (wrap1 S1)     RCG   0x1e3a8 (wrap2 S2)
+#   branch 0x18004..0x18144      branch 0x1e3a4 (wrap2 S2)
+#
+# The vote mask covers GCC_QUPV3_WRAP_2_M_AHB_CLK (bit 2),
+# GCC_QUPV3_WRAP_2_S_AHB_CLK (bit 1) and GCC_QUPV3_WRAP2_S2_CLK (bit 6),
+# which are the three clocks the raphael device tree asks for on the
+# qupv3_se19_i2c node.
+#
+# All five branch checks now look at the same register, the one that
+# really carries the S2 clock.  The sweet platform also checked
+# 0x18008, which on the SM8150 is the wrapper1 slave AHB clock.  That
+# clock runs in hardware clock gating mode there, and Linux skips the
+# halt bit entirely in that mode (clk_branch_in_hwcg_mode), so the
+# 0060 check was looking at a bit that no longer means what it meant
+# on the SM7150.
+PATCHES_WORDS = [
+    (
+        "touch-se-base",
+        0x4E62F4,
+        0x9168AA60,   # add x0, x19, #0xa2a, lsl #12  -> 0xa84000
+        0x9170BA60,   # add x0, x19, #0xc2e, lsl #12  -> 0xc88000
+        "touch controller moves from SE7 to SE19",
+    ),
+    (
+        "touch-rcg",
+        0x4E6318,
+        0x52902915,   # mov w21, #0x18148
+        0x529C7515,   # mov w21, #0x1e3a8
+        "root clock generator moves from wrapper1 S1 to wrapper2 S2",
+    ),
+    (
+        "touch-vote-register",
+        0x4E6320,
+        0x52840189,   # mov w9, #0x5200c
+        0x52840289,   # mov w9, #0x52014
+        "clock vote register moves to the wrapper2 block",
+    ),
+    (
+        "touch-vote-mask",
+        0x4E6330,
+        0x52A0178B,   # mov w11, #0xbc0000
+        0x528008CB,   # mov w11, #0x46
+        "vote for the wrapper2 master AHB, slave AHB and S2 clocks",
+    ),
+    (
+        "touch-branch-report",
+        0x4E6458,
+        0x52900096,   # mov w22, #0x18004
+        0x529C7496,   # mov w22, #0x1e3a4
+        "the branch that is reported when the clock stays off",
+    ),
+    (
+        "touch-branch-0",
+        0x4E6464,
+        0xD10512B8,   # sub x24, x21, #0x144
+        0xD10012B8,   # sub x24, x21, #4
+        "branch check 0 points at the wrapper2 S2 clock",
+    ),
+    (
+        "touch-branch-1",
+        0x4E6478,
+        0xD10502B8,   # sub x24, x21, #0x140
+        0xD10012B8,   # sub x24, x21, #4
+        "branch check 1 points at the wrapper2 S2 clock",
+    ),
+    (
+        "touch-branch-2",
+        0x4E648C,
+        0xD104F2B8,   # sub x24, x21, #0x13c
+        0xD10012B8,   # sub x24, x21, #4
+        "branch check 2 points at the wrapper2 S2 clock",
+    ),
+    (
+        "touch-branch-3",
+        0x4E64A0,
+        0xD104E2B8,   # sub x24, x21, #0x138
+        0xD10012B8,   # sub x24, x21, #4
+        "branch check 3 points at the wrapper2 S2 clock",
+    ),
+    # The pin controller.  The sweet platform reaches its TLMM through the
+    # north bridge at 0x03900000, the raphael has its TLMM at 0x03000000.
+    # Reading the wrong address aborts the kernel, which is what happened
+    # on the first attempt.
+    (
+        "touch-tlmm-base",
+        0x4E62E8,
+        0x52A07200,   # mov w0, #0x3900000
+        0x52A06000,   # mov w0, #0x3000000
+        "pin controller moves from the north bridge to the real TLMM",
+    ),
+    # The mapping length has to reach the interrupt pin of the raphael,
+    # which is gpio122 at offset 0x7a000.  The old length was 0x5b000,
+    # built from the same constant the serial engine base uses.  Adding
+    # 0x22000 to that constant gives 0x7c000.
+    (
+        "touch-tlmm-size",
+        0x4E62E4,
+        0xB2740261,   # orr x1, x19, #0x1000
+        0x91408A61,   # add x1, x19, #0x22, lsl #12
+        "pin controller mapping grows to 0x7c000 so gpio122 is reachable",
+    ),
+]
+
+
 def patch_macho(macho, only=None):
     for name, off, expect, repl, why in PATCHES:
         if only and name not in only:
@@ -247,6 +368,16 @@ def patch_macho(macho, only=None):
                 f"found {actual.hex()} -- the kernel layout changed")
         macho[off:off + len(repl)] = repl
         print(f"patched {name} at 0x{off:x}: {expect.hex()} -> {repl.hex()} ({why})")
+    for name, off, expect, repl, why in PATCHES_WORDS:
+        if only and name not in only:
+            continue
+        actual = struct.unpack_from("<I", macho, off)[0]
+        if actual != expect:
+            raise SystemExit(
+                f"patch {name}: expected {expect:08x} at 0x{off:x}, "
+                f"found {actual:08x} -- the kernel layout changed")
+        struct.pack_into("<I", macho, off, repl)
+        print(f"patched {name} at 0x{off:x}: {expect:08x} -> {repl:08x} ({why})")
     return macho
 
 
@@ -301,6 +432,12 @@ def main():
             if got != repl:
                 ok = False
             print(f"verify {name}: {got.hex()} {state}")
+        for name, off, expect, repl, why in PATCHES_WORDS:
+            got = struct.unpack_from("<I", blob, off)[0]
+            state = "OK" if got == repl else "MISMATCH"
+            if got != repl:
+                ok = False
+            print(f"verify {name}: {got:08x} {state}")
         # The payload must be byte identical apart from the patched words.
         diff = [i for i in range(fsize2) if blob[i] != macho[i]]
         print("changed bytes in kernel.macho:", len(diff))
