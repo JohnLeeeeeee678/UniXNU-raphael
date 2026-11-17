@@ -120,6 +120,60 @@ DEVICES = {
         'memory_frequency': 2133000000,
         'bus_frequency': 100000000,
     },
+    'nx627j': {
+        # Nubia Z20 (nx627j, SM8150-AC / Snapdragon 855+). Same silicon as
+        # raphael/guacamole/nabu; only the board compatible and the panel
+        # differ. Facts below come from the phone's own data only:
+        #   - GIC/timer/UFS/cont_splash: the Z20's boot.img DTB table
+        #     (GICD 0x17a00000/0x10000 + GICR 0x17a60000/0x100000,
+        #      timer 19.2 MHz, ufshc 0x1d84000/0x2500,
+        #      reserved-memory/cont_splash_region 0x9c000000 + 0x2400000)
+        #   - panel: EW811, 1080x2340 AMOLED command mode, DSI ctrl 0 / phy 0
+        #   - touch: Goodix "6270", SE17, I2C 0x5d, IRQ GPIO122
+        #   - /memory and the board compatible are supplied by ABL at boot; the
+        #     live FDT (docs/nx627j-live-dump.md) has the merged view.
+        'name': 'Nubia Z20 (nx627j, SM8150-AC)',
+        # The ADT carries this as an extra 'compatible' string only. The kernel
+        # platform expert binds on platform_match below; the real board-id is
+        # in the dtbo overlay and never reaches this path. Cosmetic for boot.
+        'board_compat': 'nubia,nx627j',
+        # The kernel is built with MACHINE_CONFIG=SWEET, whose platform expert
+        # only binds IONameMatch 'xiaomi,sweet'. Keep this even on a nubia.
+        'platform_match': 'xiaomi,sweet',
+        'soc_compat': 'qcom,sm8150',
+        # Not physical facts, just the ADT's conservative kernel window.
+        #
+        # The phone's own /memory (read in TWRP recovery, see
+        # docs/nx627j-live-dump.md) is:
+        #   0x80000000 .. 0xBCBFFFFF   ~972 MiB  bank0 (all DT carve-outs here)
+        #   0xBCC00000 .. 0xBFFFFFFF    ~52 MiB  memory hole, not RAM
+        #   0xC0000000 .. 0x13FFFFFFF     2 GiB  upper window, DT entry 2
+        #   0x140000000 .. 0x1FFFFFFFF    3 GiB  upper window, DT entry 3
+        # The DT splits the upper window 2+3 GiB; /proc/iomem merges it into one
+        # 0xC0000000-0x1FFFFFFFF System RAM line. This profile keeps the older
+        # 3 GiB + 2 GiB split (ADT window from 0xc0000000, RamPartitionDxe bank
+        # at 0x180000000): the union is the same 0xC0000000-0x200000000 range,
+        # so both descriptions map the same DRAM.
+        'phys_base': 0xc0000000,
+        'mem_size': 0xc0000000,
+        'high_phys_base': 0x180000000,
+        'high_mem_size': 0x80000000,
+        'gicd': 0x17a00000, 'gicd_size': 0x10000,
+        'gicr': 0x17a60000, 'gicr_size': 0x100000,
+        'timebase': 19200000, 'vtimer_intid': 19,
+        # Confirmed: cont_splash_region 0x9c000000 + 0x2400000 in the Z20's
+        # SM8150 v2 DTB. 1080x2340x4 is only 10.1 MiB, so 36 MiB is roomy.
+        'fb': 0x9c000000, 'fb_size': 0x2400000,
+        'fb_w': 1080, 'fb_h': 2340, 'fb_stride': 1080 * 4,
+        'ufs': 0x01d84000, 'ufs_size': 0x3000,
+        'cpu_compat': 'qcom,kryo485',
+        'cpus': 8,
+        'cpu_regs': [0, 0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700],
+        # 855+ prime core is 2.96 GHz (raphael's 855 is 2.84 GHz).
+        'cpu_clocks': [1785600000] * 4 + [2419200000] * 3 + [2956800000],
+        'memory_frequency': 2133000000,      # TODO: confirm (LPDDR4x speed bin)
+        'bus_frequency': 100000000,
+    },
 }
 
 

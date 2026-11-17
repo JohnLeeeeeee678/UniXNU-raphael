@@ -107,11 +107,16 @@ from tree import assemble  # noqa: E402
 
 FW_TARGET = os.environ.get("FW_TARGET", "DEBUG")
 
+# The board definition decides the artifact names; the build directories stay
+# "raphael" because build-firmware.py / build-payload.py share them.
+board_toml = tomllib.loads((ROOT / "board.toml").read_text())
+KIT = board_toml.get("board", {}).get("kit", "raphael")
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--fd", default=str(ROOT / "uefi" / "Build" / "SurfaceDuo1Pkg" / f"{FW_TARGET}_CLANGPDB" / "FV" / "SM8150_EFI.fd"))
-parser.add_argument("--dtb", default=str(ROOT / "inputs" / "uefi-prebuilt" / "raphael.dtb"))
+parser.add_argument("--dtb", default=str(ROOT / "inputs" / "uefi-prebuilt" / f"{KIT}.dtb"))
 parser.add_argument("--ramdisk", default=str(ROOT / "out" / "raphael" / "payload" / "payload.img"))
-parser.add_argument("-o", "--output", default=str(ROOT / "out" / "raphael" / "boot" / "boot-raphael.img"))
+parser.add_argument("-o", "--output", default=str(ROOT / "out" / "raphael" / "boot" / f"boot-{KIT}.img"))
 args = parser.parse_args()
 
 WORK = ROOT / "out" / "raphael"
