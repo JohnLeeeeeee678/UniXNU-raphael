@@ -1,0 +1,458 @@
+name: build-nx627j
+
+# Turnkey builder for the Nubia Z20 (nx627j, SM8150-AC).
+#
+# nx627j is the SAME SM8150 family as raphael (K20 Pro) and guacamole (OnePlus
+# 7 Pro), which already reached the iOS 16.7.16 userland. This workflow reuses
+# that proven SM8150 kernel build and the Aloha/UniXNU firmware, swapping only
+# the device tree and the Apple Device Tree (ADT) profile (1080x2340 panel,
+# Kryo 485 with the 2.96 GHz prime core).
+#
+# Two jobs:
+#   1. kernel  (macos-15): builds the SM8150 XNU 8796 kernel the SAME public way
+#      guacamole does -- via dipa-studio/ios-sweet + blacktop/darwin-xnu-build
+#      (MACHINE_CONFIG=SWEET). This is fully public; NO private defconfig needed.
+#   2. build   (ubuntu-latest): builds the Aloha UEFI firmware volume, packs the
+#      FAT payload (kernel + nx627j ADT), and packs the Android boot image.
+#
+# Everything the build job needs that is not fetched from a public tree is in
+# this repo (board.toml, scripts/, vendored patches/). The only network input
+# is the public iPhone X (D22AP) IPSW, auto-extracted by scripts/get-base-d22ap.sh.
+#
+# Run order: enable Actions -> run "build-nx627j" (it chains kernel -> build via
+# the uploaded kernel artifact). Or run the two jobs in order manually.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: >
+          "full" = the complete port. "bootshim_upstream" = identical, but
+          BootShim.S is reverted to upstream (it then no longer stores the
+          device-tree pointer at the guacamole address 0x9FF92000), which is
+          how to tell whether that store is what resets raphael.
+        required: false
+        default: full
+        type: choice
+        options: [full, bootshim_upstream]
+      dtb_url:
+        description: >
+          Optional URL to the Z20 board DTB (inputs/nx627j.dtb). Without it the
+          build falls back to raphael's DTB, whose panel/touch nodes are the
+          wrong panel. Must return a raw FDT (magic d00dfeed).
+        required: false
+        default: ""
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - board.toml
+      - patches/**
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    # XNU 8796 needs the iig ABI -> a macOS runner with Xcode.
+    # macos-15 (Xcode 16) is used instead of macos-14: on this account the
+    # macos-14 runner image is cancelled within seconds of the job starting
+    # (every macos-14 run since 2026-11-14 ends "cancelled" in 1-3 s with a
+    # billable duration of 0 ms, while ubuntu-latest and macos-15 both work).
+    runs-on: macos-15
+    timeout-minutes: 240
+    env:
+      # Without MACOS_VERSION build.sh pops an interactive gum menu and dies
+      # ("could not open TTY"). 13.5 == xnu-8796 == the iOS 16 generation.
+      MACOS_VERSION: "13.5"
+      MACHINE_CONFIG: SWEET
+      KERNEL_CONFIG: DEVELOPMENT
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: raphael
+
+      - name: Checkout ios-sweet (XNU 8796 build scripts + sweet platform patches)
+        uses: actions/checkout@v4
+        with:
+          repository: dipa-studio/ios-sweet
+          path: ios-sweet
+
+      - name: Fetch darwin-xnu-build at the pinned commit ios-sweet uses
+        env:
+          DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
+        run: |
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 "https://github.com/blacktop/darwin-xnu-build" "$DXB_SHA"
+          git -C dxb checkout -q FETCH_HEAD
+          # overlay ios-sweet's XNU patches/shims onto blacktop's patches dir
+          cp ios-sweet/xnu/patches/*.patch ios-sweet/xnu/patches/*.sh dxb/patches/ 2>/dev/null || true
+          # our own kernel patches (they sort after ios-sweet's 00xx series)
+          cp raphael/patches/01*.patch dxb/patches/ 2>/dev/null || true
+          ls dxb/patches/01*.patch
+          # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
+          sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
+          # Informational only: if the upstream build.sh changed its ARCHS line
+          # the plain arm64 slice may be dropped, but do not fail the run here.
+          if grep -q 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh; then
+            echo "build.sh now builds a plain arm64 slice"
+          else
+            echo "::warning::ARCHS sed did not match; check build.sh if the kernel comes out arm64e-only"
+          fi
+
+      - name: Host dependencies
+        run: |
+          brew install jq gum bash cmake ninja
+          # build.sh only checks that xcodes exists (Xcode is preinstalled); stub it
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
+          sudo chmod +x /usr/local/bin/xcodes
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          # iig lives inside the selected Xcode; make sure the toolchain that
+          # actually builds the kernel can produce the iig interfaces.
+          xcrun --find iig
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build XNU 8796 (SWEET platform, arm64)
+        working-directory: dxb
+        env:
+          MAKEFLAGS: '-k'
+          MACHINE_CONFIG: SWEET
+          KERNEL_CONFIG: DEVELOPMENT
+        run: bash build.sh
+
+      - name: Stage the kernel as kernel.macho
+        run: |
+          mkdir -p raphael/inputs/raphael
+          # Accept ONLY a real 64-bit little-endian Mach-O (magic cffaedfe).
+          # The build tree also contains text files named kernel.* (KPI symbol
+          # export lists), and picking one of those silently produces a bogus
+          # kernel.macho. Portable POSIX filter (BSD find has no -printf).
+          find dxb -type f -name 'kernel*' 2>/dev/null > /tmp/cands.txt
+          echo "=== all kernel* files in the build tree ==="
+          while IFS= read -r f; do
+            echo "  $(wc -c < "$f" | tr -d ' ') $f"
+          done < /tmp/cands.txt
+          K=""
+          while IFS= read -r f; do
+            sz=$(wc -c < "$f" | tr -d ' ')
+            [ "$sz" -gt 2000000 ] || continue
+            magic=$(od -An -tx1 -N4 "$f" | tr -d ' \n')
+            if [ "$magic" = "cffaedfe" ]; then K="$f"; break; fi
+          done < /tmp/cands.txt
+          if [ -z "$K" ]; then
+            echo "no Mach-O kernel found; candidates (name/size/type):" >&2
+            while IFS= read -r f; do
+              echo "  $(wc -c < "$f" | tr -d ' ') $(file -b "$f") $f" >&2
+            done < /tmp/cands.txt
+            exit 1
+          fi
+          echo "picked kernel: $K"
+          cp "$K" raphael/inputs/raphael/kernel.macho
+          ls -la raphael/inputs/raphael/kernel.macho
+
+      # build.sh only warns when a patch does not apply, so prove our own
+      # patch really landed instead of silently booting an ECM kernel.
+      - name: Verify the CDC-ACM serial-log patch landed
+        run: |
+          echo "=== source state ==="
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          grep -n 'ud_cfg_desc\[' "$SRC" || echo "(no descriptor found)"
+          grep -n 'GET_LINE_CODING' "$SRC" || echo "(no line-coding handling: patch skipped)"
+          grep -n 'ud_raw_send' "$SRC" || echo "(no raw log sender: patch skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -i 'Sweet iOS' || true
+          if strings -a raphael/inputs/raphael/kernel.macho | grep -q 'Sweet iOS (USB Serial)' \
+             && grep -q 'GET_LINE_CODING' "$SRC"; then
+            echo "CDC-ACM serial-log patch: APPLIED"
+          else
+            echo "::error::the CDC-ACM patch was skipped; descriptors are still ECM"
+            exit 1
+          fi
+
+      - name: Verify the panel-digest patch landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          grep -n 'panel_report' "$SRC" || echo "(no panel reporter: patch skipped)"
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'SWEET PANEL' || true
+          if grep -q 'panel_report' "$SRC" \
+             && strings -a raphael/inputs/raphael/kernel.macho | grep -qF '=== SWEET t=%us'; then
+            echo "panel-digest patch: APPLIED"
+          else
+            echo "::error::0103 was skipped; the phone would boot without the panel digest"
+            exit 1
+          fi
+
+      - name: Verify the panel-report-state patch landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          echo "=== source state ==="
+          grep -n 'gui=%d' "$SRC" || echo "(no gui= field: 0111 skipped)"
+          grep -n 'int muted = sweet_console_muted' "$SRC" || echo "(m= is still read after it is cleared: 0111 skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'gui=%d' || true
+          # 0111 makes the report say whether the GUI took the screen.  Without
+          # it the phone can reach the home screen and still look broken.
+          if strings -a raphael/inputs/raphael/kernel.macho | grep -qF 'gui=%d' \
+             && grep -q 'int muted = sweet_console_muted' "$SRC"; then
+            echo "panel report state: APPLIED"
+          else
+            echo "::error::0111 was skipped; the report cannot tell whether the GUI took the screen"
+            exit 1
+          fi
+
+      - name: Verify the control-transfer status direction landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          echo "=== source state ==="
+          grep -n 'status_in' "$SRC" || echo "(no status_in field: 0112 skipped)"
+          grep -n 'ud.status_in = !ud.data_in' "$SRC" || echo "(the direction is still taken from the event: 0112 skipped)"
+          # The old code took the direction from the endpoint number of the
+          # "control status" event.  That line has to be gone, or the patch
+          # was applied backwards.
+          if grep -qF 'ud_start(ep, UD_DATA, 0, ctl)' "$SRC"; then
+            echo "::error::0112 was applied backwards; the old direction is still there"
+            exit 1
+          fi
+          # 0112 derives the status stage direction from the data stage.
+          # Without it the device answers SET_LINE_CODING with an OUT status,
+          # the host waits for an IN status that never comes, and every
+          # attempt to open the COM port times out with Win32 error 121.
+          if grep -qF 'ud.status_in = !ud.data_in' "$SRC" \
+             && grep -qF 'ud_start(sep, UD_DATA, 0, ctl)' "$SRC"; then
+            echo "control status direction: APPLIED"
+          else
+            echo "::error::0112 was skipped; the COM port cannot be opened"
+            exit 1
+          fi
+
+      - name: Verify the SpringBoard-focused panel landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          echo "=== rings ==="
+          grep -n 'panel_sb\[\|panel_usb\[' "$SRC" || echo "(rings missing: 0104 skipped)"
+          grep -n 'SWEET CS' "$SRC" || echo "(panel does not keep the SWEET CS lines: 0106 skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F -- '-- springboard --' || true
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F -- '-- fb --' || true
+          if strings -a raphael/inputs/raphael/kernel.macho | grep -qF 'sb=%u/%u fb=%u' \
+             && grep -q 'panel_sb\[' "$SRC"; then
+            echo "springboard panel: APPLIED"
+          else
+            echo "::error::0104 was skipped; the panel would not isolate SpringBoard"
+            exit 1
+          fi
+
+      - name: Verify the page-rejection diagnostics landed
+        run: |
+          echo "=== source state ==="
+          grep -n 'SWEET CS:' dxb/xnu/bsd/kern/kern_cs.c || echo "(kern_cs.c: 0105 skipped)"
+          grep -n 'SWEET CS:' dxb/xnu/osfmk/vm/vm_fault.c || echo "(vm_fault.c: 0105 skipped)"
+          grep -n 'sweetcs_allow' dxb/xnu/bsd/kern/kern_cs.c || echo "(no override boot-arg)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'SWEET CS: %s' || true
+          if strings -a raphael/inputs/raphael/kernel.macho | grep -qF 'SWEET CS: %s off=0x%llx' \
+             && strings -a raphael/inputs/raphael/kernel.macho | grep -qF 'SWEET CS: %s flags=0x%x' \
+             && grep -q 'sweetcs_allow' dxb/xnu/bsd/kern/kern_cs.c; then
+            echo "page-rejection diagnostics: APPLIED"
+          else
+            echo "::error::0105 was skipped; a rejected page would stay unexplained"
+            exit 1
+          fi
+
+      - name: Verify the framebuffer/crash panel landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_usb.c
+          echo "=== source state ==="
+          grep -n 'panel_fb\[' "$SRC" || echo "(no fb ring: 0107 skipped)"
+          grep -n 'sweetpanel' "$SRC" || echo "(no panel switch boot-arg)"
+          grep -n 'panel_fbswaps' "$SRC" || echo "(no swap counter: 0108 skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F -- '-- crash top --' || true
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F -- 'sweetpanel' || true
+          if grep -q 'panel_fb\[' "$SRC" && grep -q 'sweetpanel' "$SRC" \
+             && strings -a raphael/inputs/raphael/kernel.macho | grep -qF -- '-- crash top --'; then
+            echo "framebuffer panel: APPLIED"
+          else
+            echo "::error::0107 was skipped; the panel would not show whether the GUI presents"
+            exit 1
+          fi
+
+      - name: Verify the SM8150 touch panel height landed
+        run: |
+          SRC=dxb/xnu/iokit/Kernel/arm/hid/SweetHID.cpp
+          echo "=== source state ==="
+          grep -n '2340' "$SRC" || echo "(no 2340: 0113 skipped)"
+          grep -n '2400' "$SRC" || echo "(no 2400 left: 0113 skipped)"
+          # 0061 hardcoded the guacamole panel height of 2400 into the HID
+          # code.  On the raphael the panel is 2340 tall, so the touch
+          # coordinates sat 30 logical pixels above the picture and the
+          # edge gesture never fired.
+          if grep -q '2340' "$SRC" && ! grep -q '2400' "$SRC"; then
+            echo "touch panel height: APPLIED"
+          else
+            echo "::error::0113 was skipped; the touch and the display do not line up"
+            exit 1
+          fi
+
+      - name: Verify the SM8150 touch driver landed
+        run: |
+          SRC=dxb/xnu/bsd/dev/sweet_touch.c
+          echo "=== source state ==="
+          grep -n 'GT9889' "$SRC" || echo "(no GT9889: 0114 skipped)"
+          grep -n '0x00c88000' "$SRC" || echo "(no SE19 base: 0114 skipped)"
+          grep -n '0x03d00000' "$SRC" || echo "(no SOUTH tile: 0114 skipped)"
+          echo "=== kernel strings ==="
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'GT9889' || true
+          strings -a raphael/inputs/raphael/kernel.macho | grep -F 'GT9896' || true
+          # 0060 drives the sweet: SE7, the NORTH TLMM tile, the wrapper1
+          # vote register and a GT9896 in the Yellowstone protocol.  None of
+          # that is true on the raphael, so without 0114 the touch IC never
+          # gets a clock and the phone stays locked.
+          if grep -q 'GT9889' "$SRC" && grep -q '0x00c88000' "$SRC" \
+             && grep -q '0x03d00000' "$SRC"; then
+            echo "SM8150 touch driver: APPLIED"
+          else
+            echo "::error::0114 was skipped; the touch controller is still driven as a sweet"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nx627j-kernel
+          path: raphael/inputs/raphael/kernel.macho
+          if-no-files-found: error
+
+  build:
+    needs: kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the SM8150 kernel built by the kernel job
+        uses: actions/download-artifact@v4
+        with:
+          name: nx627j-kernel
+          path: inputs/raphael
+
+      - name: Checkout UniXNU driver (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: b6ae99c17194e6a18fd819d3148e69fe405e91fc
+          path: unixnu
+          submodules: recursive
+
+      - name: Checkout Project Aloha UEFI (SM8150)
+        uses: actions/checkout@v4
+        with:
+          repository: Project-Aloha/mu_aloha_platforms
+          # Full 40-char SHA: a short SHA is not fetchable by `git fetch <sha>`.
+          ref: 0b79812897177e9fdd1fb8cb02f05f5338322541
+          path: uefi
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host tools (EDK2 + UniXNU driver)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build uuid-dev bison flex nasm iasl gcc g++ python3-dev clang lld llvm mtools unzip zip
+          # UniXNU builds the firmware with EDK II's CLANGPDB tool chain and
+          # looks for clang / lld-link / llvm-lib / llvm-rc on PATH. Ubuntu
+          # ships them version-suffixed under /usr/lib/llvm-*/bin, so link the
+          # bare names the EDK II tools_def.txt expects.
+          for t in clang lld-link llvm-lib llvm-rc; do
+            if command -v "$t" >/dev/null 2>&1; then echo "have $t"; continue; fi
+            cand=$(ls /usr/lib/llvm-*/bin/"$t" /usr/bin/"$t"-* 2>/dev/null | sort -V | tail -1)
+            if [ -n "$cand" ]; then sudo ln -sf "$cand" "/usr/local/bin/$t"; echo "linked $t -> $cand"; else echo "MISSING $t"; fi
+          done
+          command -v clang lld-link llvm-lib llvm-rc
+          pip install -r unixnu/requirements.txt || true
+
+      - name: Apply the SM8150 patches (vendored in this repo)
+        run: |
+          # NOTE: `git -C <dir> apply` resolves the patch path relative to <dir>,
+          # so the paths must walk back up to the repo-root patches/ directory.
+          git -C unixnu apply ../patches/unixnu-guacamole.patch
+          git -C uefi apply ../patches/aloha-guacamole.patch
+          # drivers/DarwinBoot is a SUBMODULE OF UniXNU, not of the Aloha tree
+          git -C unixnu/drivers/DarwinBoot apply ../../../patches/darwinboot-guacamole.patch
+          if [ "${{ inputs.variant || 'full' }}" = "bootshim_upstream" ]; then
+            git -C uefi checkout -- BootShim/BootShim.S
+            echo "variant: BootShim.S reverted to upstream (no DTB-pointer store)"
+          fi
+
+      - name: Fetch the Z20 DTB (inputs/nx627j.dtb)
+        env:
+          NX627J_DTB_URL: ${{ inputs.dtb_url || '' }}
+        run: |
+          echo "dtb_url: ${NX627J_DTB_URL:-<none>}"
+          bash scripts/get-nx627j-dtb.sh
+          ls -l inputs/uefi-prebuilt/nx627j.dtb
+
+      - name: Fetch iPhone X (D22AP) base ADT (auto from public IPSW)
+        run: bash scripts/get-base-d22ap.sh
+
+      - name: Fetch the prebuilt BaseCrypto driver (Mu external dependency)
+        run: |
+          # Platforms/AndromedaPkg/Andromeda.dsc.inc unconditionally includes
+          # $(SHARED_CRYPTO_PATH)/Driver/Bin/CryptoDriver.inc.dsc. Upstream gets it
+          # from CryptoPkg/Binaries/BaseCryptoDriver_ext_dep.json (a web ext_dep);
+          # the edk2 stuart tooling is not used here, so fetch it by hand into the
+          # folder name the ext_dep would have created (<name>_extdep).
+          DEST=uefi/MU_BASECORE/CryptoPkg/Binaries/edk2-basecrypto-driver-bin_extdep
+          mkdir -p "$DEST"
+          curl -sL -o /tmp/cryptobin.zip \
+            https://github.com/microsoft/mu_crypto_release/releases/download/v1.1.3/Mu_CryptoBin_v1_1_3.zip
+          unzip -q -o /tmp/cryptobin.zip -d "$DEST"
+          ls -l "$DEST/Driver/Bin/CryptoDriver.inc.dsc"
+
+      - name: Build the UEFI firmware volume (SM8150 + xiaomi-raphael device)
+        env:
+          # Mu's BaseTools build with -Wall -Werror and its older sources trip
+          # gcc-13 warnings (e.g. EfiRom.c "assignment discards 'const'
+          # qualifier"). BaseTools' header.makefile appends $(EXTRA_OPTFLAGS)
+          # last to both CFLAGS and CXXFLAGS, so exporting it demotes those
+          # warnings back to warnings on modern Ubuntu runners.
+          EXTRA_OPTFLAGS: "-Wno-error"
+        run: python3 scripts/build-firmware.py
+
+      - name: Build the FAT payload (kernel + raphael ADT)
+        run: python3 scripts/build-payload.py
+
+      - name: Pack the Android boot image
+        run: python3 scripts/build-bootimg.py
+
+      - name: Dump build logs on failure
+        if: failure()
+        run: |
+          echo "=== build logs ==="
+          ls -la out/raphael/logs/ 2>/dev/null || echo "(no logs dir)"
+          for f in out/raphael/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "----- $f -----"
+            tail -n 60 "$f"
+          done
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: out/raphael/logs/
+          if-no-files-found: ignore
+
+      - name: Report
+        run: cat out/raphael/boot/boot.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-nx627j.img
+          path: out/raphael/boot/boot-nx627j.img
+          if-no-files-found: error
