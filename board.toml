@@ -11,7 +11,7 @@
 #
 # STAGE 2 (this file as committed): build-firmware.py generates Aloha's
 # `Device/nubia-nx627j` from the raphael template with scripts/aloha_nx627j_device.py
-# — the Z20 DTB, 1080x2340 PCDs and Nubia SMBIOS strings; the SM8150 memory map
+# ??the Z20 DTB, 1080x2340 PCDs and Nubia SMBIOS strings; the SM8150 memory map
 # and DXE lists are reused as-is.
 #
 # STAGE 1 (fallback): set TARGET_DEVICE="xiaomi-raphael" and FDT="raphael.dtb"
@@ -73,7 +73,7 @@ MU_SCHEMA_FILE_NAME = "AndromedaPkgCfgData.xml"
 
 [payload]
 volume = "GUACESP"
-size_mib = 64
+size_mib = 34
 loader = "firmware"
 title = "Nubia Z20 - XNU"
 # 3 GiB contiguous kernel window, same as the working SM8150 ports. For a
@@ -107,7 +107,7 @@ kernel_args = [
 [payload.adt]
 tool = "scripts/make-nx627j-adt.py"
 unique_chip_id = "required"
-owned_memory_size = "0xc0000000"
+owned_memory_size = "0x80000000"
 
 [bootimg.image]
 # Confirmed against the Z20's stock boot.img (header v2, page 4096):
@@ -125,3 +125,4 @@ pagesize = 4096
 # to the kernel) and the SM8150 ports boot that as v0. Change this to 2 only if
 # `fastboot boot` rejects the image with a header error.
 header_version = 0
+

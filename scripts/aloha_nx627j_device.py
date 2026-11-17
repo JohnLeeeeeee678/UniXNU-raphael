@@ -106,6 +106,32 @@ def ensure_device(aloha_root, dtb, force=False, log=print):
                 log(f"aloha: note: {key} not present in {pcd.name}")
         log("aloha: PCDs updated (1080x2340, Nubia Z20)")
 
+    # 2b. the loader modules. The raphael DXE lists do not carry them, so a
+    # device copied from raphael boots to the UEFI frontpage instead of the
+    # UniXNU menu. Guacamole's lists are the reference for which modules the
+    # boot chain needs (application, app driver, DarwinBoot, payload volume).
+    for name, lines in (
+        ("DXE.dsc.inc", (
+            "AndromedaPkg/Driver/ShengBootMemoryDxe/ShengBootMemoryDxe.inf",
+            "UniXNUPkg/Application/UniXNU/UniXNU.inf",
+            "UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf",
+            "DarwinBootPkg/Driver/DarwinBoot.inf",
+        )),
+        ("DXE.inc", (
+            "INF UniXNUPkg/Application/UniXNU/UniXNU.inf",
+            "INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf",
+            "INF DarwinBootPkg/Driver/DarwinBoot.inf",
+            "INF AndromedaPkg/Driver/ShengBootMemoryDxe/ShengBootMemoryDxe.inf",
+        )),
+    ):
+        path = dst / name
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="surrogateescape")
+            if "ShengBootMemoryDxe" not in text:
+                path.write_text(text.rstrip("\n") + "\n" + "\n".join(lines) + "\n",
+                                encoding="utf-8", errors="surrogateescape")
+                log(f"aloha: {name}: added the loader modules")
+
     # 3. any remaining textual reference to the template
     for path in dst.rglob("*"):
         if path.is_file() and path.suffix.lower() in (".inc", ".inf", ".c", ".h", ".dsc"):
